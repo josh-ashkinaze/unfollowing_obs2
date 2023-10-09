@@ -13,7 +13,7 @@ from datetime import datetime
 
 
 LOG_FORMAT = '%(asctime)s %(levelname)s: %(message)s'
-current_date = datetime.now().strftime('%Y-%m-%d')
+current_date = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
 
 log_filename = f"{os.path.basename(__file__)}_{current_date}.log"
 logging.basicConfig(filename=log_filename, level=logging.INFO, format=LOG_FORMAT, datefmt='%Y-%m-%d %H:%M:%S', filemode='w')
@@ -61,20 +61,31 @@ def download_results(download_url):
 
 def make_txt_files(debug=False):
     fr_file = "__MINIMAL_FRIENDS_10.06.2023__05.51.02__START0_END-1_merged.csv"
+    fol_file = "__MINIMAL_FOLLOWERS_03.18.2023__08.28.43__START0_END-1_merged.csv"
     logging.info("read from file")
 
     fr = pd.read_csv(fr_file, dtype={'main':'object', 'friends_id':'object'})
+    fol = pd.read_csv(fol_file, dtype={'main':'object', 'followers_id':'object'})
+
     ego_ids = list(fr['main'].unique())
     alter_ids = list(fr['friends_id'].unique())
+    spreader_ids = list(fol['main'].unique())
+    follower_ids = list(fol['followers_id'].unique())
 
     if debug:
         ego_ids = ego_ids[:5]
         alter_ids = alter_ids[:5]
+        spreader_ids = spreader_ids[:5]
+        follower_ids = follower_ids[:5]
         ego_fn = 'ego_ids_debug.txt'
         alter_fn = 'alter_ids_debug.txt'
+        spreader_fn = 'spreader_ids_debug.txt'
+        follower_fn = 'follower_ids_debug.txt'
     else:
         ego_fn = 'ego_ids.txt'
         alter_fn = 'alter_ids.txt'
+        spreader_fn = 'spreader_ids.txt'
+        follower_fn = 'follower_ids.txt'
 
     with open(ego_fn, 'w') as f:
         for item in ego_ids:
@@ -82,18 +93,37 @@ def make_txt_files(debug=False):
     with open(alter_fn, 'w') as f:
         for item in alter_ids:
             f.write("%s\n" % item)
-    return ego_fn, alter_fn
+
+    with open (spreader_fn, 'w') as f:
+        for item in spreader_ids:
+            f.write("%s\n" % item)
+
+    with open (follower_fn, 'w') as f:
+        for item in follower_ids:
+            f.write("%s\n" % item)
+    return ego_fn, alter_fn, spreader_fn, follower_fn
 
 def main(args):
 
-    logging.info("2")
     # Create the text files and get the filenames
-    logging.info(args.debug)
+    logging.info(f"who:{args.file_type}")
+    logging.info(f"name:{args.job_name}")
+    logging.info(f"debug:{args.debug}")
 
-    ego_fn, alter_fn = make_txt_files(args.debug)
+
+    ego_fn, alter_fn, spreader_fn, follower_fn = make_txt_files(args.debug)
     logging.info("out")
     # Decide which file path to use based on a new argparse argument
-    file_path = ego_fn if args.file_type == 'ego' else alter_fn
+    if args.file_type == 'ego':
+        file_path = ego_fn
+    elif args.file_type == 'alter':
+        file_path = alter_fn
+    elif args.file_type == 'spreader':
+        file_path = spreader_fn
+    elif args.file_type == 'follower':
+        file_path = follower_fn
+    else:
+        raise ValueError(f"Invalid file type: {args.file_type}")
 
     logging.info(file_path)
 
@@ -129,7 +159,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Execute a Twitter compliance job.")
     parser.add_argument("job_name", help="Name of the compliance job.")
     parser.add_argument("job_type", help="Type of the compliance job.", choices=["tweets", "users"])
-    parser.add_argument("file_type", help="Type of file to use ('ego' or 'alter').", choices=["ego", "alter"])
+    parser.add_argument("file_type", help="Type of file to use", choices=["ego", "alter", "spreader", "follower"])
     parser.add_argument("--debug", help="Run in debug mode. If set, use a different file path.", action="store_true")
 
     args = parser.parse_args()
