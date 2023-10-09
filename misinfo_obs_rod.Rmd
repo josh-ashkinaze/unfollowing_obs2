@@ -1,0 +1,1063 @@
+---
+title: "Untitled"
+author: "Joshua Ashkinaze"
+date: "2023-08-10"
+output: html_document
+---
+
+```{r packages}
+library(purrr)
+library(dplyr)
+library(ggplot2)
+library(glmmTMB)
+library(lmtest)
+library(sandwich)
+library(stargazer)
+library(lmtest)
+library(gtsummary)
+library(broom.mixed)
+library(jtools)
+library(ggthemes)
+library(checkmate)
+library(blme) 
+library(vtable)
+library(DescTools)
+library(marginaleffects)
+library(sandwich)
+library(lmtest)
+nt <- min(parallel::detectCores(),20)
+```
+
+```{r read-data}
+
+process_data <- function(cur_ideology) {
+
+  file_name <- paste0("processed/s2_mar23_oct23_ideo", cur_ideology, "_final_mod")
+  nt <- min(parallel::detectCores(), 20)
+
+  min_zero <- function(input_vector) {
+    output_vector <- ifelse(input_vector > 0, input_vector, 0)
+    return(output_vector)
+  }
+
+  if (!file.exists(paste0(file_name, ".rds"))) {
+    df2 <- read.csv(paste0(file_name, ".csv"))
+    df2$main <- as.factor(df2$main)
+    df2$is_liberal <- (df2$theta < 0) * 1
+    df2$followers_id <- as.factor(df2$followers_id)
+    df2$tie_id <- as.factor(paste0(df2$followers_id, df2$main, sep="_"))
+    df2$abs_ideo <- abs(df2$theta)
+    df2$spreader_follow_prop <- (df2$n_spreader_following / pmax(df2$follower_following_count, 1))
+    df2$n_spreader_following_prop <- (df2$n_spreader_following / pmax(df2$follower_following_count, 1))
+    saveRDS(df2, paste0(file_name, ".rds"), compress = FALSE)
+  } else {
+    df2 <- readRDS(paste0(file_name, ".rds"))
+  }
+
+  return(df2)
+}
+
+df2 <- process_data("Y")
+
+
+```
+
+# Run Models and Marginal Effects
+
+```{r run-models}
+
+
+ clear_environment <- function(df) {
+  # Creates a new data frame without the original environment
+  as.data.frame(unclass(df))
+  }
+
+
+compute_marginal_fx <-
+
+  function(model,
+           run_type,
+           model_name,
+           data_set,
+           ideology) {
+    marginal_list <- list()
+    
+    fn <-
+      paste0(paste0(run_type, model_name, data_set, ideology, sep = "_"),
+             "marginal.rds")
+    
+    marginal_list[['liberal_comparison']] <-
+      avg_comparisons(model,
+                      by = "is_liberal",
+                      comparison = "lnoravg",
+                      transform = "exp")  %>% as.data.frame(.) %>% tibble(.)
+    
+    marginal_list[['overall_comparison']] <-
+      avg_comparisons(model)  %>% as.data.frame(.) %>% tibble(.)
+    
+    marginal_list[['liberal_interactions']] <-
+      avg_comparisons(
+        model,
+        comparison = "lnoravg",
+        transform = "exp",
+        variables = c("abs_ideo", "n_spreader_following"),
+        by = "is_liberal",
+      ) %>% as.data.frame(.) %>% tibble(.)
+    
+    marginal_list[['liberal_interactions_p']] <-
+      avg_comparisons(
+        model,
+        comparison = "lnoravg",
+        transform = "exp",
+        hypothesis = "pairwise",
+        variables = c("abs_ideo", "n_spreader_following"),
+        by = "is_liberal"
+      ) %>% as.data.frame(.) %>% tibble(.)
+    
+    
+    
+    marginal_list[['overall_interactions']] <-
+      slopes(
+        model,
+        variables = "abs_ideo",
+        newdata = datagrid(n_spreader_following = c(-2,-1, 0, 1, 2)),
+        type = 'response'
+      ) %>% as.data.frame(.) %>% tibble(.)
+    
+    
+    marginal_list[['overall_interactions_p']] <-
+      slopes(
+        model,
+        variables = "abs_ideo",
+        newdata = datagrid(n_spreader_following = c(-2,-1, 0, 1, 2)),
+        type = 'response',
+        hypothesis = "pairwise"
+      ) %>% as.data.frame(.) %>% tibble(.)
+    
+    # Apparently R links the large model object as a refernece
+    # to derived content, such as dataframes 
+    marginal_list <- lapply(marginal_list, clear_environment)
+    saveRDS(marginal_list, fn)
+    return(marginal_list)
+  }
+
+
+standardize_preds <- function(data, columns) {
+  data <- data %>%
+    mutate(across(all_of(columns), ~ ((. - mean(
+      .
+    )) / sd(.))))
+  return(data)
+}
+
+standardize_preds_gelman <- function(data, columns) {
+  data <- data %>%
+    mutate(across(all_of(columns), ~ ((. - mean(
+      .
+    )) / (2 * sd(
+      .
+    )))))
+  return(data)
+}
+
+center_binary_variable_gelman <- function(binary_variable) {
+  p <- mean(binary_variable)
+  centered_variable <- ifelse(binary_variable == 1, 1 - p, -p)
+  return(centered_variable)
+}
+
+run_model <-
+  function(method,
+           data_set,
+           rfx_opt,
+           run_mode,
+           ideology) {
+    
+    # Define predictor variables
+    if (data_set == 'minimal') {
+      if (ideology == "Y") {
+        numeric_ivs <-
+          c(
+            "follower_tweet_count",
+            "follower_following_count",
+            "follower_follower_count",
+            "spreader_tweet_count",
+            "spreader_following_count",
+            "spreader_follower_count",
+            "n_spreader_following",
+            "change_spreader_tweet_count2",
+            "abs_ideo"
+          )
+      } else{
+        numeric_ivs <-
+          c(
+            "follower_tweet_count",
+            "follower_following_count",
+            "follower_follower_count",
+            "spreader_tweet_count",
+            "spreader_following_count",
+            "spreader_follower_count",
+            "n_spreader_following",
+            "change_spreader_tweet_count2"
+          )
+      }
+      
+      
+    } else if (data_set == 'maximal') {
+      numeric_ivs <-
+        c(
+          "follower_tweet_count",
+          "follower_following_count",
+          "follower_follower_count",
+          "change_follower_tweet_count2",
+          "change_follower_following_count2",
+          "change_follower_follower_count2",
+          "spreader_tweet_count",
+          "spreader_following_count",
+          "spreader_follower_count",
+          "change_spreader_tweet_count2",
+          "change_spreader_following_count2",
+          "change_spreader_follower_count2",
+          "n_spreader_following",
+          "abs_ideo"
+        )
+    }
+    
+    if (ideology == "Y") {
+      binary_ivs <- c('recip', 'is_liberal')
+    } else {
+      binary_ivs <- c('recip')
+    }
+    
+    
+    if (ideology == "Y") {
+      all_ivs <-
+        c(
+          binary_ivs,
+          numeric_ivs,
+          c(
+            "abs_ideo*is_liberal",
+            "is_liberal*n_spreader_following",
+            "n_spreader_following*abs_ideo"
+          )
+        )
+    } else{
+      all_ivs <-
+        c(binary_ivs,
+          numeric_ivs)
+    }
+    
+    # Define the formula string
+    formula_str <-
+      paste("unfollowed ~", paste(all_ivs, collapse = " + "))
+    
+    
+    # Rescale predictors
+    df3 <- process_data(ideology)
+    
+    if (run_mode == 'debug') {
+      df3 <- df3 %>% group_by(unfollowed) %>% sample_n(1000) %>% ungroup()
+    }
+    
+    df3 <- standardize_preds(df3, numeric_ivs)
+    
+    if (method == 'simple') {
+      fit <- glm(formula_str, data = df3, family = 'binomial')
+      print(summary(fit))
+      if (ideology == "Y") {
+        compute_marginal_fx(fit, run_mode, "simple", data_set, ideology)
+      }
+      saveRDS(fit, paste0(data_set, run_mode, ideology, "_simple.rds"))
+      
+    } else if (method == 'bayesian') {
+      # Add random effects part to the formula for Bayesian and lmer
+      if (rfx_opt == 'simple') {
+        formula_str <- paste(formula_str, "+ (1|main)")
+      }
+      else {
+        formula_str <- paste(formula_str, "+ (1|main/tie_id)")
+      }
+      
+      bayes_fit <-
+        bglmer(
+          as.formula(formula_str),
+          data = df3,
+          family = "binomial",
+          verbose = 2L,
+          control = glmerControl(
+            optimizer = "nlminbwrap",
+            optCtrl = list(maxfun = 5000)
+          ),
+          fixef.prior = t(df = 7, scale = 2.5)
+        )
+      print(summary(bayes_fit))
+      print("Summarized bayes")
+       if (ideology == "Y") {
+         compute_marginal_fx(bayes_fit,
+                             run_mode,
+                             "bayes",
+                             data_set,
+                             ideology)
+         print("Got marginal fx for bayes")
+      }
+      saveRDS(bayes_fit,
+              paste0(
+                run_mode,
+                data_set,
+                rfx_opt,
+                ideology,
+                paste0("_bayes_rfx.rds")
+              ))
+      print("Saved bayes")
+  
+      }
+  }
+
+
+
+# NOTE: Simplified to only have random intercept for spreaders
+
+run <- "debug" # either 'real' or 'debug'
+ideology_sample <-
+  c("Y", "N") # whether to include ideology or not -- Y or N
+methods <-
+  c("bayesian", "simple") # simple, bayesian, lmer, glmm --> Only use bayesian and simple for paper
+data_sets <-
+  c("minimal") # minimal, maximal --> Only use minimal for paper
+rfx_opt <-
+  c('simple') # simple, nested --> only use "simple" for paper
+model_results <- list()
+
+for (cur_ideology in ideology_sample) {
+  process_data(cur_ideology)
+  for (data_set in data_sets) {
+    for (method in methods) {
+      for (ropt in rfx_opt) {
+          run_model(
+            method = method,
+            data_set = data_set,
+            rfx_opt = ropt,
+            run_mode = run,
+            ideology = cur_ideology
+          )
+      }
+    }
+  }
+}
+  
+
+saveRDS(model_results,
+        paste0("model_results", run, cur_ideology, ".rds"))
+```
+
+# Get Marginal Effects Only 
+
+```{r margins-only}
+
+clear_environment <- function(df) {
+    # Creates a new data frame without the original environment
+    as.data.frame(unclass(df))
+  }
+  
+
+compute_marginal_fx <-
+  function(model,
+           run_type,
+           model_name,
+           data_set,
+           ideology) {
+    marginal_list <- list()
+    
+    
+    fn <-
+      paste0(paste0(run_type, model_name, data_set, ideology, sep = "_"),
+             "marginal.rds")
+    
+    marginal_list[['liberal_comparison']] <-
+      avg_slopes(model,
+                      by = "is_liberal")  %>% as.data.frame(.) %>% tibble(.)
+    
+    marginal_list[['overall_comparison']] <-
+      avg_slopes(model)  %>% as.data.frame(.) %>% tibble(.)
+    
+    marginal_list[['liberal_interactions']] <-
+      avg_slopes(
+        model,
+        variables = c("abs_ideo", "n_spreader_following"),
+        by = "is_liberal",
+      ) %>% as.data.frame(.) %>% tibble(.)
+    
+    marginal_list[['liberal_interactions_p']] <-
+      avg_slopes(
+        model,
+        hypothesis = "pairwise",
+        variables = c("abs_ideo", "n_spreader_following"),
+        by = "is_liberal"
+      ) %>% as.data.frame(.) %>% tibble(.)
+    
+    
+    marginal_list[['overall_interactions']] <-
+      slopes(
+        model,
+        variables = "n_spreader_following",
+        newdata = datagrid(abs_ideo = c(-2,-1, 0, 1, 2)),
+        type = 'response'
+      ) %>% as.data.frame(.) %>% tibble(.)
+    
+    
+    marginal_list[['overall_interactions_p']] <-
+      slopes(
+        model,
+        variables = "n_spreader_following",
+        newdata = datagrid(abs_ideo = c(-2,-1, 0, 1, 2)),
+        type = 'response',
+        hypothesis = "pairwise"
+      ) %>% as.data.frame(.) %>% tibble(.)
+    
+    
+    marginal_list <- lapply(marginal_list, clear_environment)
+    saveRDS(marginal_list, fn)
+    return(marginal_list)
+    
+    
+  }
+
+bayes.model <- readRDS("realminimalsimpleY_bayes_rfx.rds")
+simple.model <- readRDS("minimalrealY_simple.rds")
+simple_marginal <- compute_marginal_fx(simple.model,"real2", "simple", "minimal", "Y")
+
+```
+
+# Marginal Plots
+
+## Ideology Model
+
+```{r margin-graphs}
+library(ggthemes)
+library(dplyr)
+library(ggplot2)
+
+library(dplyr)
+library(ggplot2)
+
+clean_labels <- function(labels) {
+  sapply(labels, function(label) {
+    if (startsWith(label, "n_")) {
+      label <- paste0("N ", substr(label, 3, nchar(label)))
+    }
+    label <- gsub("_", " ", label)
+    label <- gsub("[0-9]", "", label)
+    label <- tools::toTitleCase(label)
+    return(label)
+  })
+}
+
+print_AME_CI <- function(df) {
+  cat("\nAverage Marginal Effects and 95% Confidence Intervals:\n")
+   
+  for(i in 1:nrow(df)) {
+    variable_name <- df[i, "term"]
+    estimate <- df[i, "estimate"]
+    lower_bound <- df[i, "conf.low"]
+    upper_bound <- df[i, "conf.high"]
+    
+    cat(sprintf("%s: (AME = %.4f, 95%% CI = [%.4f, %.4f])\n",
+                variable_name, estimate, lower_bound, upper_bound))
+  }
+}
+
+
+margins <- readRDS("real2simpleminimalY_marginal.rds")
+
+
+# overall fx 
+print_AME_CI(margins$overall_comparison)
+
+# interactions -- first is conservative then liberals
+print_AME_CI(margins$liberal_comparison)
+
+graph.overall <-
+  margins$overall_comparison %>%
+  as.data.frame() %>%
+  mutate(term2 = clean_labels(term)) %>%
+  ggplot(aes(x = estimate, y = reorder(term2, estimate))) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.4) +
+  theme_minimal(base_size = 15) +
+  geom_point(size = 2) +
+  theme(
+     panel.grid.minor.y = element_blank(
+      
+    ),
+    panel.grid.major.y = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    panel.grid.major.x = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    panel.grid.minor.x = element_blank(
+    ), plot.title = element_text(face = "bold"),
+      axis.title.x = element_text(vjust = -1.2)  # Adjust this value to move the x-axis label
+
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = 'dashed',
+    size = 1,
+    color = 'red'
+  ) +
+  labs(
+    title = "Average Marginal Effects of Unfollowing",
+    subtitle = "Average marginal effects (no interactions) and 95% CIs of a +1\nSD change on probability of unfollowing",
+    x = "Marginal Effect\n(Probability Scale)",
+    y = "Coefficient"
+  )
+ggsave(
+  "graph_overall.png",
+  graph.overall,
+  height = 5,
+  width = 9,
+  dpi = 300
+) 
+
+
+graph.inter.entrench.prez <-
+  margins$liberal_comparison %>% as.data.frame() %>%
+  filter(term %in% c("n_spreader_following")) %>%
+  mutate(lib = ifelse(is_liberal == 1, "Liberal", "Conservative")) %>%
+  ggplot(data = ., aes(x = lib, y = estimate)) +
+  geom_point(size = 5) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.3) +
+  theme_nice() + # Commented out since it's not standard ggplot2
+  geom_point(size = 2) +
+  geom_line(
+    aes(group = 1),
+    size = 1,
+    linetype = 'solid',
+    color = 'black'
+  ) + 
+  theme(
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    plot.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  labs(
+    title = "Effect of T1 exposure on probability unfollowing, by political ideology",
+    y = "Marginal Effect\n(Probability Scale)",
+    x = "Ideology",
+    subtitle = "Group level AME (95% CI) of a +1 SD increase in number of spreaders followed at T1\non probability of unfollowing a spreader at T2"
+  ) +
+  geom_line(
+    aes(group = 1),
+    size = 1,
+    linetype = 'solid',
+    color = 'black'
+  )
+ggsave("graph.inter.entrench.prez.png", graph.inter.entrench.prez, dpi=300, width=9, height=5, bg="transparent")
+
+
+
+graph.inter.entrench.paper <- margins$liberal_comparison %>% as.data.frame() %>% 
+  filter(term %in% c("n_spreader_following")) %>% 
+   mutate(lib = ifelse(is_liberal == 1, "Liberal", "Conservative")) %>% 
+  ggplot(data=., aes(x=lib, y=estimate)) + 
+  geom_point(size=5) + 
+  geom_errorbar(aes(ymin=conf.low, ymax=conf.high), width=0.3) +  
+  theme_minimal(base_size = 20) +
+  geom_point(size = 2) +
+  theme(
+     panel.grid.minor.y = element_blank(
+      
+    ),
+    panel.grid.major.y = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    panel.grid.major.x = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    panel.grid.minor.x = element_blank(
+    ), plot.title = element_text(face = "bold"),
+     axis.title.x = element_text(vjust = -1.2) 
+  ) +
+  labs(title="How T1 exposure affects probability of\nunfollowing (by partisan alignment)", y="Marginal Effect\n(Probability Scale)", x="Ideology", subtitle="AME (95% CI) of a +1 SD increase in T1 exposure") + 
+  geom_line(aes(group=1), size=1, linetype='solid', color='black') 
+ggsave("graph.inter.entrench.paper.png", graph.inter.entrench.paper, dpi=400, width=9, height=5)
+
+
+graph.inter.ideo.prez <- margins$liberal_comparison %>% 
+  as.data.frame() %>% 
+  filter(term %in% c("abs_ideo")) %>% 
+  mutate(lib = ifelse(is_liberal == 1, "Liberal", "Conservative")) %>% 
+  ggplot(data=., aes(x=lib, y=estimate)) + 
+  geom_point(size=5) + 
+  theme_nice() +  
+  geom_errorbar(aes(ymin=conf.low, ymax=conf.high), width=0.3) +  # Reduce width here
+  labs(title="How ideological strength affects probability of unfollowing a misinformation\nspreader (by partisan alignment)", y="Marginal Effect\n(Probability Scale)", x="Ideology", subtitle="AME (95% CI) of a +1 SD increase in absolute value of ideology on probability of\nunfollowing a spreader at T2") + 
+  geom_line(aes(group=1), size=1, linetype='solid', color='black') + geom_hline(yintercept=0, linetype='dashed', size=2, color='red') + 
+  theme(panel.background = element_rect(fill = "transparent", colour = NA),  plot.background = element_rect(fill = "transparent", colour = NA))
+ggsave("graph.inter.ideo.prez.png", graph.inter.ideo.prez, dpi=300, width=9, height=5, bg="transparent")
+
+graph.inter.ideo.paper <- margins$liberal_comparison %>% 
+  as.data.frame() %>% 
+  filter(term %in% c("abs_ideo")) %>% 
+  mutate(lib = ifelse(is_liberal == 1, "Liberal", "Conservative")) %>% 
+  ggplot(data=., aes(x=lib, y=estimate)) + 
+  geom_point(size=6) + 
+  theme_minimal(base_size = 20) +
+  theme(
+     panel.grid.minor.y = element_blank(
+      
+    ),
+    panel.grid.major.y = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    panel.grid.major.x = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    panel.grid.minor.x = element_blank(
+    ), plot.title = element_text(face = "bold"),
+     axis.title.x = element_text(vjust = -1.2) 
+  ) +
+
+  geom_errorbar(aes(ymin=conf.low, ymax=conf.high), width=0.3) +  # Reduce width here
+  labs(title="How ideological strength affects probability\nof unfollowing (by partisan alignment)", y="Marginal Effect\n(Probability Scale)", x="Ideology", subtitle="AME (95% CI) of a +1 SD increase in ideological strength") + 
+  geom_line(aes(group=1), size=1, linetype='solid', color='black') + geom_hline(yintercept=0, linetype='dashed', size=2, color='red') 
+ggsave("graph.inter.ideo.paper.png", graph.inter.ideo.paper, dpi=400, width=9, height=5, bg="transparent")
+
+
+graph.entrench_abs <- margins$overall_interactions %>% 
+  as.data.frame() %>% 
+  dplyr::mutate(abs_ideo = case_when(
+    abs_ideo == -2 ~ "-2 SD",
+    abs_ideo == -1 ~ "-1 SD",
+    abs_ideo ==  0 ~ "Mean",
+    abs_ideo ==  1 ~ "+1 SD",
+    abs_ideo ==  2 ~ "+2 SD"  # This line ensures that any value not specified above remains as it is.
+  )) %>% 
+  ggplot(data=., aes(x=reorder(abs_ideo, -1*estimate), y=estimate)) + 
+  geom_point(size=6) + 
+  theme_nice() +  
+  geom_errorbar(aes(ymin=conf.low, ymax=conf.high), width=0.3) +  # Reduce width here
+  labs(title="How ideological strength moderates the effect of T1 exposure on the probability of\nunfollowing a misinformation spreader", y="Marginal Effect\n(Probability Scale)", x="Absolute Value Ideology", subtitle="AME (95% CI) of a +1 SD increase in T1 exposure on probability of\nunfollowing a spreader at T2") + 
+  geom_line(aes(group=1), size=1, linetype='solid', color='black') + geom_hline(yintercept=0, linetype='dashed', size=2, color='red') + 
+  theme(panel.background = element_rect(fill = "transparent", colour = NA),  plot.background = element_rect(fill = "transparent", colour = NA))
+ggsave("graph.entrench_abs.png", graph.entrench_abs, dpi=300, width=9, height=5, bg="transparent")
+  
+  
+
+
+graph.entrench_abs.paper <- margins$overall_interactions %>% 
+  as.data.frame() %>% 
+  dplyr::mutate(abs_ideo = case_when(
+    abs_ideo == -2 ~ "-2 SD",
+    abs_ideo == -1 ~ "-1 SD",
+    abs_ideo ==  0 ~ "Mean",
+    abs_ideo ==  1 ~ "+1 SD",
+    abs_ideo ==  2 ~ "+2 SD"  # This line ensures that any value not specified above remains as it is.
+  )) %>% 
+  ggplot(data=., aes(x=reorder(abs_ideo, estimate), y=estimate)) + 
+  geom_point(size=6) + 
+    theme_minimal(base_size = 20) +
+  theme(
+     panel.grid.minor.y = element_blank(
+      
+    ),
+    panel.grid.major.y = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    panel.grid.major.x = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    panel.grid.minor.x = element_blank(
+    ), plot.title = element_text(face = "bold"),
+     axis.title.x = element_text(vjust = -1.2) 
+  ) +
+  geom_errorbar(aes(ymin=conf.low, ymax=conf.high), width=0.3) +  # Reduce width here
+  labs(title="How ideological strength moderates the\neffect of T1 exposure on the probability\nof unfollowing", y="Marginal Effect\n(Probability Scale)", x="Ideological Strength\n(Absolute Value of Ideology)", subtitle="AME (95% CI) of a +1 SD increase in T1 exposure") + 
+  geom_line(aes(group=1), size=1, linetype='solid', color='black') 
+ggsave("graph.entrench_abs.paper.png", graph.entrench_abs.paper, dpi=400, width=9, height=5, bg="transparent")
+  
+
+
+```
+# Logit Graphs (Raw)
+
+```{r}
+margins$liberal_comparison %>%
+  as.data.frame() %>%
+  clear_environment()
+  filter(term %in% c("abs_ideo", "n_spreader_following")) %>%
+  mutate(id = ifelse(is_liberal, "(Liberal)", "(Conservative)"))
+
+```
+
+
+# Robustness Checks - Different models
+
+## Fit the non ideology model on the ideology = Y section. 
+
+The idea is to make sure non ideology variables don't differ for folks whose 
+ideology can be matched 
+
+```{r}
+
+if (!file.exists("no_id_model_for_idY3.rds")) {
+  numeric_ivs <-
+    c(
+      "follower_tweet_count",
+      "follower_following_count",
+      "follower_follower_count",
+      "spreader_tweet_count",
+      "spreader_following_count",
+      "spreader_follower_count",
+      "n_spreader_following",
+      "change_spreader_tweet_count2"
+    )
+  binary_ivs <- c('recip')
+  all_ivs <-c(binary_ivs,numeric_ivs)
+  formula_str <-paste("unfollowed ~", paste(all_ivs, collapse = " + "))
+  dfY <- process_data("Y")
+  dfY <- standardize_preds(dfY, numeric_ivs)
+  fit <- glm(formula_str, data = dfY, family = 'binomial')
+  saveRDS(fit, "no_id_model_for_idY.rds")
+} else{
+  #pass
+}
+
+
+
+
+```
+
+
+## Main Specification 
+### Read in models
+```{r}
+bayesian.Y <- readRDS("realminimalsimpleY_bayes_rfx.rds")
+basic.Y <- readRDS("minimalrealY_simple.rds")
+```
+
+### Stargazer tables
+```{r}
+# NOTE: Following this guide for including bayesian mxed models in stargazer tables
+# http://svmiller.com/blog/2020/05/better-way-to-include-random-effects-stargazer/
+
+clean_labels <- function(labels) {
+  sapply(labels, function(label) {
+    if (startsWith(label, "n_")) {
+      label <- paste0("N ", substr(label, 3, nchar(label)))
+    }
+    label <- gsub("_", " ", label)
+    label <- gsub("[0-9]", "", label)
+    label <- tools::toTitleCase(label)
+    return(label)
+  })
+}
+
+df3 <- readRDS("processed/s2_mar23_oct23_ideoY_final_mod.rds")
+basic.Y.vcov <- vcovCL(basic.Y, cluster=~main)
+basic.Y.coefs <- coeftest(basic.Y,  vcov = basic.Y.vcov, type="HC1")
+
+basic.Y.tidy <- broom::tidy(basic.Y)
+bayesian.Y.tidy <- broom::tidy(bayesian.Y) %>% filter(effect == "fixed")
+sd_spreader <- round(as.numeric(attributes(VarCorr(bayesian.Y)$"main")$stddev), 3)
+
+mod_stats <- tribble(~stat, ~basic.Y, ~bayesian.Y,
+        "sd(spreader)", NA, sd_spreader,
+        "", NA, NA,
+        "N", nobs(basic.Y), nobs(bayesian.Y)) 
+
+stargazer(basic.Y, basic.Y, 
+          # ^ Call the first model twice so coefs are in stargazer, 
+          # then replace estimates and SEs with the Bayesian ones 
+          coef = list(basic.Y.tidy$estimate, bayesian.Y.tidy$estimate), #(normal, bayesian)
+          se = list(basic.Y.coefs[,2], bayesian.Y.tidy$std.error), #(normal, bayesian)
+          omit.table.layout = "s",
+          add.lines = lapply(1:nrow(mod_stats), function(i) unlist(mod_stats[i, ])),
+          model.names = FALSE,
+          column.sep.width = "1pt", 
+          single.row = TRUE,
+          type='text',
+
+          title = "Bayesian hierarchical logistic regressionvs non-hierarchical logistic regression with HC1 cluster robust errors at the spreader level. Note: Non-binary variables are z-scored so coefficients can be interpreted as the accompanying change in the log odds of unfollowing with a +1SD increase in the predictor variable.",
+          column.labels = c("Cluster-Robust Logistic Regression", "Bayesian Multilevel Logistic Regression"), out='main_specification.tex')
+  
+```
+### Plot Models 
+```{r fig.width=10, fig.height=8}
+library(sandwich)
+library(lmtest)
+
+clean_labels <- function(labels) {
+  sapply(labels, function(label) {
+    if (startsWith(label, "n_")) {
+      label <- paste0("N ", substr(label, 3, nchar(label)))
+    }
+    label <- gsub("_", " ", label)
+    label <- gsub("[0-9]", "", label)
+    label <- tools::toTitleCase(label)
+    return(label)
+  })
+}
+# 
+
+bayes.tidy <-  tidy(bayesian.Y) %>% 
+  mutate(model = "Bayesian Multilevel") %>%
+  filter(effect == "fixed") %>%
+  select(term, estimate, std.error, p.value, model)%>% 
+  cbind(confint(bayesian.Y, method='Wald') %>% na.omit())
+
+
+simple.tidy <- tidy(basic.Y.coefs) %>% 
+  cbind(coefci(basic.Y, vcov=basic.Y.vcov)) %>%
+  mutate(model = "Cluster Robust") %>%
+  select(term, estimate, std.error, p.value, model, `2.5 %`, `97.5 %`) 
+ 
+both <- rbind(bayes.tidy, simple.tidy) %>%
+  mutate(
+    term2 = clean_labels(term),
+  ) 
+
+
+model.comparison.y <- ggplot(data=both, aes(x=estimate, y=reorder(term2, estimate), colour=model)) + 
+  geom_point(size=3, position=position_dodge(width=0.5))  + 
+  geom_errorbarh(aes(xmin=`2.5 %`, xmax=`97.5 %`), position=position_dodge(width=0.5)) + 
+  labs(y="Term", x="Logit Coefficient", 
+       title="Comparison of Models (Point Estimate and 95%CIs)", 
+       subtitle="Bayesian hierarchical logistic regression vs non-hierarchical logistic regression with HC1 cluster\nrobust errors at the spreader level. Note: Non-binary coefficients are z-scored, so estimates can be\ninterpreted as an effect of a + 1SD increase on log odds of unfollowing.") + 
+  theme_nice()
+model.comparison.y
+ggsave("model_comparisony.png", dpi=400)
+
+```
+
+## Non ideology
+### Read in models
+```{r}
+# noid.N <- readRDS("minimalrealN_simple.rds")
+# noid.Y <- readRDS("no_id_model_for_idY.rds")
+# 
+# 
+df3 <- readRDS("processed/s2_mar23_aug23_ideoN_final_mod.rds")
+noid.N.vcov <- vcovCL(noid.N, cluster=~main)
+noid.N.coefs <- coeftest(noid.N ,  vcov = noid.N.vcov, type="HC1")
+
+dfY <- readRDS("processed/s2_mar23_aug23_ideoY_final_mod.rds")
+noid.Y.vcov <- vcovCL(noid.Y, cluster=~main)
+noid.Y.coefs <- coeftest(noid.Y ,  vcov = noid.Y.vcov, type="HC1")
+```
+
+
+### Plot models
+```{r fig.width=12, fig.height=8}
+noid.N.tidy <- tidy(noid.N) %>% 
+  cbind(coefci(noid.N, vcov=noid.N.vcov)) %>%
+  mutate(Sample = "All Followers") %>%
+  select(term, estimate, std.error, p.value, Sample, `2.5 %`, `97.5 %`) 
+
+noid.Y.tidy <- tidy(noid.Y) %>% 
+  cbind(coefci(noid.Y, vcov=noid.Y.vcov)) %>%
+  mutate(Sample = "Matched Ideology") %>%
+  select(term, estimate, std.error, p.value, Sample, `2.5 %`, `97.5 %`) 
+
+comb <- rbind(noid.Y.tidy, noid.N.tidy) %>%  mutate(
+    term2 = clean_labels(term))
+
+model.comparison.n <- ggplot(data=comb, aes(x=estimate, y=reorder(term2, estimate), colour=Sample)) + 
+  geom_point(size=8, position=position_dodge(width=0.5))  + 
+  geom_errorbarh(aes(xmin=`2.5 %`, xmax=`97.5 %`), size=1, position=position_dodge(width=0.5)) + 
+  labs(y="Term", x="Logit Coefficient") + 
+  theme_classic(base_size = 25) + 
+   scale_color_manual(
+    values = c("All Followers" = "#EF476F", "Matched Ideology" = "#826AED")
+  )
+model.comparison.n
+ggsave("model_comparison.png", dpi=400, height=8, width=16)
+
+```
+
+
+## Make plot
+
+```{r fig.width=10, fig.height=8}
+library(sandwich)
+library(lmtest)
+
+clean_labels <- function(labels) {
+  sapply(labels, function(label) {
+    if (startsWith(label, "n_")) {
+      label <- paste0("N ", substr(label, 3, nchar(label)))
+    }
+    label <- gsub("_", " ", label)
+    label <- gsub("[0-9]", "", label)
+    label <- tools::toTitleCase(label)
+    return(label)
+  })
+}
+# 
+
+bayes.tidy <-  tidy(bayesian.Y) %>% 
+  mutate(model = "Bayesian Multilevel") %>%
+  filter(effect == "fixed") %>%
+  select(term, estimate, std.error, p.value, model)%>% 
+  cbind(confint(bayesian.Y, method='Wald') %>% na.omit())
+
+
+simple.tidy <- tidy(basic.Y.coefs) %>% 
+  cbind(coefci(basic, vcov=basic.Y.vcov)) %>%
+  mutate(model = "HC1 Cluster Robust Logit") %>%
+  select(term, estimate, std.error, p.value, model, `2.5 %`, `97.5 %`) 
+ 
+both <- rbind(bayes.tidy, simple.tidy) %>%
+  mutate(
+    term2 = clean_labels(term),
+  ) %>%
+  filter(term != "(Intercept)")
+
+model.comparison.y <- ggplot(data=both, aes(x=estimate, y=reorder(term2, estimate), colour=model)) + 
+  geom_point(size=3, position=position_dodge(width=0.5))  + 
+  geom_errorbarh(aes(xmin=`2.5 %`, xmax=`97.5 %`), position=position_dodge(width=0.5)) + 
+  labs(y="Term", x="Logit Coefficient", 
+       title="Comparison of Models (Point Estimate and 95% Wald CIs)", 
+       subtitle="Bayesian hierarchical logistic regression with t (7,2.5) priors vs non-hierarchical logistic regression with HC1 cluster\nrobust errors at the spreader level. Note: Non-binary coefficients are z-scored, so estimates can be interpreted as an\neffect of a + 1SD increase") + 
+  theme_nice()
+model.comparison.y
+ggsave("model_comparisony.png", dpi=400)
+
+```
+
+```{r}
+#-0.9892818009
+
+# 0.9892818009
+#-1.030675995
+
+ tidy(bayesian) %>% 
+  mutate(model = "Bayesian Multilevel") %>%
+  filter(effect == "fixed") %>%
+  select(term, estimate, std.error, p.value, model)%>% 
+  cbind(confint(bayesian, method='Wald') %>% na.omit())
+ 
+
+```
+
+```{r}
+
+samp <- df2 %>% group_by(unfollowed) %>% sample_n(10000)
+
+
+```
+
+```{r}
+library(broom.mixed)
+a <- glm("unfollowed ~ n_spreader_following*is_liberal + abs_ideo*is_liberal + abs_ideo*n_spreader_following", family='binomial', data=df2)
+```
+
+```{r}
+bayesian <- readRDS("minimalrealY_bayes_rfx.rds")
+
+```
+
+```{r}
+#1.608e-05
+# -2.6e-07
+df1 <- df2 %>% group_by(unfollowed) %>% sample_n(5000)
+
+af <- allFit(bglmer(
+            "unfollowed ~ n_spreader_following + (1|main)",
+            data = df1,
+            family = "binomial",
+            verbose = 2L,
+            fixef.prior = t(df = 7, scale = 2.5)
+          ), maxfun=50000)
+
+saveRDS(af, "all_fits.RDS")
+```
+
+```{r}
+d <- df2 %>% dplyr::sample_n(2000)
+d$abs_scaled <- scale(d$abs_ideo)
+d$n_scaled <- scale(d$n_spreader_following)
+l <- glm(unfollowed ~ abs_ideo + n_spreader_following, data=d)
+
+   b <-
+      slopes(
+        l,
+        variables = "n_spreader_following",
+        newdata = datagrid(abs_ideo = c(-2,-1, 0, 1, 2)),
+        type = 'response',
+        hypothesis = "pairwise"
+      ) %>% as.data.frame(.) %>% tibble(.)
+```
+
+```{r}
+graph.overall <-
+  margins$overall_comparison %>%
+  as.data.frame() %>%
+  mutate(term2 = clean_labels(term)) %>%
+  ggplot(aes(x = estimate, y = reorder(term2, estimate))) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.4) +
+  theme_minimal(base_size = 15) +
+  geom_point(size = 2) +
+  theme(
+    panel.grid.major.y = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    panel.grid.major.x = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    panel.grid.minor.x = element_line(
+      linewidth = 0.5,
+      colour = 'lightgray',
+      linetype = 'dashed'
+    ),
+    plot.title = element_text(face = "bold")
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = 'dashed',
+    size = 1,
+    color = 'red'
+  ) +
+  labs(
+    title = "Average Marginal Effects of Unfollowing",
+    subtitle = "Average marginal effects (no interactions) and 95% CIs of a +1\nSD change on probability of unfollowing",
+    x = "Marginal Effect\n(Probability Scale)",
+    y = "Coefficient"
+  )
+ggsave(
+  "graph_overall.png",
+  graph.overall,
+  height = 5,
+  width = 9,
+  dpi = 300
+) 
+
+```
+
+# Allfits
+```{r}
+mod <- readRDS("reaminimalsimpleY_bayes_rfx.rds")
+a <- allFit(mod)
+s
+```
+
+
