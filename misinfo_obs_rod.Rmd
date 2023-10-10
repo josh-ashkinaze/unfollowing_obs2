@@ -57,7 +57,7 @@ process_data <- function(cur_ideology) {
   return(df2)
 }
 
-df2 <- process_data("Y")
+df2 <- process_data("N")
 
 
 ```
@@ -264,9 +264,6 @@ run_model <-
     if (method == 'simple') {
       fit <- glm(formula_str, data = df3, family = 'binomial')
       print(summary(fit))
-      if (ideology == "Y") {
-        compute_marginal_fx(fit, run_mode, "simple", data_set, ideology)
-      }
       saveRDS(fit, paste0(data_set, run_mode, ideology, "_simple.rds"))
       
     } else if (method == 'bayesian') {
@@ -292,14 +289,6 @@ run_model <-
         )
       print(summary(bayes_fit))
       print("Summarized bayes")
-       if (ideology == "Y") {
-         compute_marginal_fx(bayes_fit,
-                             run_mode,
-                             "bayes",
-                             data_set,
-                             ideology)
-         print("Got marginal fx for bayes")
-      }
       saveRDS(bayes_fit,
               paste0(
                 run_mode,
@@ -317,11 +306,11 @@ run_model <-
 
 # NOTE: Simplified to only have random intercept for spreaders
 
-run <- "debug" # either 'real' or 'debug'
+run <- "real" # either 'real' or 'debug'
 ideology_sample <-
-  c("Y", "N") # whether to include ideology or not -- Y or N
+  c("N") # whether to include ideology or not -- Y or N
 methods <-
-  c("bayesian", "simple") # simple, bayesian, lmer, glmm --> Only use bayesian and simple for paper
+  c("simple") # simple, bayesian, lmer, glmm --> Only use bayesian and simple for paper
 data_sets <-
   c("minimal") # minimal, maximal --> Only use minimal for paper
 rfx_opt <-
@@ -470,10 +459,12 @@ print_AME_CI <- function(df) {
 margins <- readRDS("real2simpleminimalY_marginal.rds")
 
 
-# overall fx 
+# overall fx  
+print("Overall data")
 print_AME_CI(margins$overall_comparison)
 
 # interactions -- first is conservative then liberals
+print("By ideology, conservative is first")
 print_AME_CI(margins$liberal_comparison)
 
 graph.overall <-
@@ -715,7 +706,7 @@ ideology can be matched
 
 ```{r}
 
-if (!file.exists("no_id_model_for_idY3.rds")) {
+if (!file.exists("no_id_model_for_idY2.rds")) {
   numeric_ivs <-
     c(
       "follower_tweet_count",
@@ -753,7 +744,7 @@ basic.Y <- readRDS("minimalrealY_simple.rds")
 
 ### Stargazer tables
 ```{r}
-# NOTE: Following this guide for including bayesian mxed models in stargazer tables
+# NOTE: Following this guide for including bayesian mixed models in stargazer tables
 # http://svmiller.com/blog/2020/05/better-way-to-include-random-effects-stargazer/
 
 clean_labels <- function(labels) {
@@ -791,72 +782,26 @@ stargazer(basic.Y, basic.Y,
           model.names = FALSE,
           column.sep.width = "1pt", 
           single.row = TRUE,
-          type='text',
+          type='latex',
 
-          title = "Bayesian hierarchical logistic regressionvs non-hierarchical logistic regression with HC1 cluster robust errors at the spreader level. Note: Non-binary variables are z-scored so coefficients can be interpreted as the accompanying change in the log odds of unfollowing with a +1SD increase in the predictor variable.",
+          title = "Logistic regression with HC1 cluster robust errors at the spreader level and Bayesian hierarchical logistic regression. Note: Non-binary variables are z-scored so coefficients can be interpreted as the accompanying change in the log odds of unfollowing with a +1SD increase in the predictor variable.",
           column.labels = c("Cluster-Robust Logistic Regression", "Bayesian Multilevel Logistic Regression"), out='main_specification.tex')
   
-```
-### Plot Models 
-```{r fig.width=10, fig.height=8}
-library(sandwich)
-library(lmtest)
-
-clean_labels <- function(labels) {
-  sapply(labels, function(label) {
-    if (startsWith(label, "n_")) {
-      label <- paste0("N ", substr(label, 3, nchar(label)))
-    }
-    label <- gsub("_", " ", label)
-    label <- gsub("[0-9]", "", label)
-    label <- tools::toTitleCase(label)
-    return(label)
-  })
-}
-# 
-
-bayes.tidy <-  tidy(bayesian.Y) %>% 
-  mutate(model = "Bayesian Multilevel") %>%
-  filter(effect == "fixed") %>%
-  select(term, estimate, std.error, p.value, model)%>% 
-  cbind(confint(bayesian.Y, method='Wald') %>% na.omit())
-
-
-simple.tidy <- tidy(basic.Y.coefs) %>% 
-  cbind(coefci(basic.Y, vcov=basic.Y.vcov)) %>%
-  mutate(model = "Cluster Robust") %>%
-  select(term, estimate, std.error, p.value, model, `2.5 %`, `97.5 %`) 
- 
-both <- rbind(bayes.tidy, simple.tidy) %>%
-  mutate(
-    term2 = clean_labels(term),
-  ) 
-
-
-model.comparison.y <- ggplot(data=both, aes(x=estimate, y=reorder(term2, estimate), colour=model)) + 
-  geom_point(size=3, position=position_dodge(width=0.5))  + 
-  geom_errorbarh(aes(xmin=`2.5 %`, xmax=`97.5 %`), position=position_dodge(width=0.5)) + 
-  labs(y="Term", x="Logit Coefficient", 
-       title="Comparison of Models (Point Estimate and 95%CIs)", 
-       subtitle="Bayesian hierarchical logistic regression vs non-hierarchical logistic regression with HC1 cluster\nrobust errors at the spreader level. Note: Non-binary coefficients are z-scored, so estimates can be\ninterpreted as an effect of a + 1SD increase on log odds of unfollowing.") + 
-  theme_nice()
-model.comparison.y
-ggsave("model_comparisony.png", dpi=400)
-
 ```
 
 ## Non ideology
 ### Read in models
 ```{r}
-# noid.N <- readRDS("minimalrealN_simple.rds")
-# noid.Y <- readRDS("no_id_model_for_idY.rds")
-# 
-# 
-df3 <- readRDS("processed/s2_mar23_aug23_ideoN_final_mod.rds")
+noid.N <- readRDS("minimalrealN_simple.rds")
+noid.Y <- readRDS("no_id_model_for_idY.rds")
+
+
+df3 <- readRDS("s2_mar23_oct23_ideoN_final_mod.rds")
+# if error have to create  using process_data function
 noid.N.vcov <- vcovCL(noid.N, cluster=~main)
 noid.N.coefs <- coeftest(noid.N ,  vcov = noid.N.vcov, type="HC1")
 
-dfY <- readRDS("processed/s2_mar23_aug23_ideoY_final_mod.rds")
+dfY <- readRDS("s2_mar23_oct23_ideoY_final_mod.rds")
 noid.Y.vcov <- vcovCL(noid.Y, cluster=~main)
 noid.Y.coefs <- coeftest(noid.Y ,  vcov = noid.Y.vcov, type="HC1")
 ```
@@ -891,173 +836,11 @@ ggsave("model_comparison.png", dpi=400, height=8, width=16)
 ```
 
 
-## Make plot
-
-```{r fig.width=10, fig.height=8}
-library(sandwich)
-library(lmtest)
-
-clean_labels <- function(labels) {
-  sapply(labels, function(label) {
-    if (startsWith(label, "n_")) {
-      label <- paste0("N ", substr(label, 3, nchar(label)))
-    }
-    label <- gsub("_", " ", label)
-    label <- gsub("[0-9]", "", label)
-    label <- tools::toTitleCase(label)
-    return(label)
-  })
-}
-# 
-
-bayes.tidy <-  tidy(bayesian.Y) %>% 
-  mutate(model = "Bayesian Multilevel") %>%
-  filter(effect == "fixed") %>%
-  select(term, estimate, std.error, p.value, model)%>% 
-  cbind(confint(bayesian.Y, method='Wald') %>% na.omit())
-
-
-simple.tidy <- tidy(basic.Y.coefs) %>% 
-  cbind(coefci(basic, vcov=basic.Y.vcov)) %>%
-  mutate(model = "HC1 Cluster Robust Logit") %>%
-  select(term, estimate, std.error, p.value, model, `2.5 %`, `97.5 %`) 
- 
-both <- rbind(bayes.tidy, simple.tidy) %>%
-  mutate(
-    term2 = clean_labels(term),
-  ) %>%
-  filter(term != "(Intercept)")
-
-model.comparison.y <- ggplot(data=both, aes(x=estimate, y=reorder(term2, estimate), colour=model)) + 
-  geom_point(size=3, position=position_dodge(width=0.5))  + 
-  geom_errorbarh(aes(xmin=`2.5 %`, xmax=`97.5 %`), position=position_dodge(width=0.5)) + 
-  labs(y="Term", x="Logit Coefficient", 
-       title="Comparison of Models (Point Estimate and 95% Wald CIs)", 
-       subtitle="Bayesian hierarchical logistic regression with t (7,2.5) priors vs non-hierarchical logistic regression with HC1 cluster\nrobust errors at the spreader level. Note: Non-binary coefficients are z-scored, so estimates can be interpreted as an\neffect of a + 1SD increase") + 
-  theme_nice()
-model.comparison.y
-ggsave("model_comparisony.png", dpi=400)
-
-```
-
-```{r}
-#-0.9892818009
-
-# 0.9892818009
-#-1.030675995
-
- tidy(bayesian) %>% 
-  mutate(model = "Bayesian Multilevel") %>%
-  filter(effect == "fixed") %>%
-  select(term, estimate, std.error, p.value, model)%>% 
-  cbind(confint(bayesian, method='Wald') %>% na.omit())
- 
-
-```
-
-```{r}
-
-samp <- df2 %>% group_by(unfollowed) %>% sample_n(10000)
-
-
-```
-
-```{r}
-library(broom.mixed)
-a <- glm("unfollowed ~ n_spreader_following*is_liberal + abs_ideo*is_liberal + abs_ideo*n_spreader_following", family='binomial', data=df2)
-```
-
-```{r}
-bayesian <- readRDS("minimalrealY_bayes_rfx.rds")
-
-```
-
-```{r}
-#1.608e-05
-# -2.6e-07
-df1 <- df2 %>% group_by(unfollowed) %>% sample_n(5000)
-
-af <- allFit(bglmer(
-            "unfollowed ~ n_spreader_following + (1|main)",
-            data = df1,
-            family = "binomial",
-            verbose = 2L,
-            fixef.prior = t(df = 7, scale = 2.5)
-          ), maxfun=50000)
-
-saveRDS(af, "all_fits.RDS")
-```
-
-```{r}
-d <- df2 %>% dplyr::sample_n(2000)
-d$abs_scaled <- scale(d$abs_ideo)
-d$n_scaled <- scale(d$n_spreader_following)
-l <- glm(unfollowed ~ abs_ideo + n_spreader_following, data=d)
-
-   b <-
-      slopes(
-        l,
-        variables = "n_spreader_following",
-        newdata = datagrid(abs_ideo = c(-2,-1, 0, 1, 2)),
-        type = 'response',
-        hypothesis = "pairwise"
-      ) %>% as.data.frame(.) %>% tibble(.)
-```
-
-```{r}
-graph.overall <-
-  margins$overall_comparison %>%
-  as.data.frame() %>%
-  mutate(term2 = clean_labels(term)) %>%
-  ggplot(aes(x = estimate, y = reorder(term2, estimate))) +
-  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.4) +
-  theme_minimal(base_size = 15) +
-  geom_point(size = 2) +
-  theme(
-    panel.grid.major.y = element_line(
-      linewidth = 0.5,
-      colour = 'lightgray',
-      linetype = 'dashed'
-    ),
-    panel.grid.major.x = element_line(
-      linewidth = 0.5,
-      colour = 'lightgray',
-      linetype = 'dashed'
-    ),
-    panel.grid.minor.x = element_line(
-      linewidth = 0.5,
-      colour = 'lightgray',
-      linetype = 'dashed'
-    ),
-    plot.title = element_text(face = "bold")
-  ) +
-  geom_vline(
-    xintercept = 0,
-    linetype = 'dashed',
-    size = 1,
-    color = 'red'
-  ) +
-  labs(
-    title = "Average Marginal Effects of Unfollowing",
-    subtitle = "Average marginal effects (no interactions) and 95% CIs of a +1\nSD change on probability of unfollowing",
-    x = "Marginal Effect\n(Probability Scale)",
-    y = "Coefficient"
-  )
-ggsave(
-  "graph_overall.png",
-  graph.overall,
-  height = 5,
-  width = 9,
-  dpi = 300
-) 
-
-```
 
 # Allfits
 ```{r}
 mod <- readRDS("reaminimalsimpleY_bayes_rfx.rds")
 a <- allFit(mod)
-s
 ```
 
 
