@@ -60,7 +60,7 @@ def download_results(download_url):
 
 
 def make_txt_files(debug=False):
-    fr_file = "__MINIMAL_FRIENDS_10.06.2023__05.51.02__START0_END-1_merged.csv"
+    fr_file = "__MINIMAL_FRIENDS_03.29.2023__22.22.10__START0_END-1_merged_OBS.csv"
     fol_file = "__MINIMAL_FOLLOWERS_03.18.2023__08.28.43__START0_END-1_merged.csv"
     logging.info("read from file")
 
